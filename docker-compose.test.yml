@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:latest
+    container_name: postgres_test
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - test
+
+  avito-pvz-service:
+    container_name: pvz_service_test
+    build:
+      context: .
+      args:
+        SERVICE_PATH: cmd/main.go
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/root/config.yaml
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=1
+      - POSTGRES_DB=testdb
+    depends_on:
+      - postgres
+    networks:
+      - test
+
+  integration-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=1
+      - POSTGRES_DB=testdb
+    depends_on:
+      - postgres
+      - avito-pvz-service
+    networks:
+      - test
+    command: [ "go", "test", "-v", "./test", "./internal/storage"]
+
+networks:
+  test:
+    driver: bridge
+
+volumes:
+  test_data:
