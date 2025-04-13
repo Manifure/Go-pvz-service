@@ -1,44 +1,33 @@
-package handler
+package storage
 
 import (
-	"Go-pvz-service/internal/db"
 	"Go-pvz-service/internal/model"
-	"Go-pvz-service/internal/storage"
-	"encoding/json"
-	"net/http"
-	"strconv"
+	"github.com/jmoiron/sqlx"
 )
 
-func GetPVZDataHandler(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-	from := query.Get("from")
-	to := query.Get("to")
+func GetPVZWithAcceptancesFiltered(db *sqlx.DB, params model.PVZQueryParams) ([]model.PVZ, error) {
+	var pvzList []model.PVZ
 
-	limit, err := strconv.Atoi(query.Get("limit"))
-	if err != nil || limit <= 0 {
-		limit = 10
-	}
-	offset, err := strconv.Atoi(query.Get("offset"))
-	if err != nil || offset < 0 {
-		offset = 0
-	}
-
-	params := model.PVZQueryParams{
-		From:   from,
-		To:     to,
-		Limit:  limit,
-		Offset: offset,
-	}
-
-	pvzList, err := storage.GetPVZWithAcceptancesFiltered(db.DB, params)
+	query := `SELECT id, city, registered_at FROM pvz ORDER BY registered_at DESC LIMIT $1 OFFSET $2`
+	err := db.Select(&pvzList, query, params.Limit, params.Offset)
 	if err != nil {
-		http.Error(w, `{"message":"failed to fetch pvz data"}`, http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(pvzList); err != nil {
-		http.Error(w, `{"message":"failed to encode response"}`, http.StatusInternalServerError)
-		return
+	for i := range pvzList {
+		var acceptances []model.Acceptance
+		query := `
+			SELECT id, created_at, pvz_id, status
+			FROM acceptances
+			WHERE pvz_id = $1 AND created_at BETWEEN $2 AND $3
+			ORDER BY created_at DESC
+		`
+		err := db.Select(&acceptances, query, pvzList[i].ID, params.From, params.To)
+		if err != nil {
+			return nil, err
+		}
+		pvzList[i].Acceptances = acceptances
 	}
+
+	return pvzList, nil
 }

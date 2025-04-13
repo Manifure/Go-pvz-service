@@ -1,67 +1,87 @@
-package handler
+package storage
 
 import (
-	"Go-pvz-service/internal/db"
 	"Go-pvz-service/internal/model"
-	"Go-pvz-service/internal/storage"
-	"encoding/json"
 	"github.com/google/uuid"
-	"net/http"
+	"github.com/jmoiron/sqlx"
 	"time"
 )
 
-type AcceptanceRequest struct {
-	PvzID string        `json:"pvz_id"`
-	Items []ItemRequest `json:"items"`
+func HasOpenAcceptance(db *sqlx.DB, pvzID string) (bool, error) {
+	var count int
+	err := db.Get(&count,
+		`SELECT COUNT(*) FROM acceptances WHERE pvz_id = $1 AND status = 'in_progress'`,
+		pvzID,
+	)
+	return count > 0, err
 }
 
-type ItemRequest struct {
-	Type string `json:"type"`
+func CreateAcceptanceWithItems(db *sqlx.DB, acceptance *model.Acceptance) error {
+	tx, err := db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.NamedExec(
+		`INSERT INTO acceptances (id, created_at, pvz_id, status) 
+		 VALUES (:id, :created_at, :pvz_id, :status)`, acceptance,
+	)
+	if err != nil {
+		return err
+	}
+
+	for i := range acceptance.Items {
+		item := &acceptance.Items[i]
+		item.ID = uuid.New().String()
+		item.ReceivedAt = time.Now()
+
+		_, err = tx.Exec(
+			`INSERT INTO items (id, received_at, type) VALUES ($1, $2, $3)`,
+			item.ID, item.ReceivedAt, item.Type,
+		)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.Exec(
+			`INSERT INTO acceptance_items (acceptance_id, item_id) VALUES ($1, $2)`,
+			acceptance.ID, item.ID,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
-func CreateAcceptanceHandler(w http.ResponseWriter, r *http.Request) {
-	var req AcceptanceRequest
+//func GetAcceptanceWithItems(db *sqlx.DB, id string) (*model.Acceptance, error) {
+//	var acceptance model.Acceptance
+//
+//	err := db.Get(&acceptance,
+//		`SELECT id, created_at, pvz_id, status FROM acceptances WHERE id = $1`,
+//		id,
+//	)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	err = db.Select(&acceptance.Items,
+//		`SELECT i.id, i.received_at, i.type
+//		 FROM items i
+//		 JOIN acceptance_items ai ON ai.item_id = i.id
+//		 WHERE ai.acceptance_id = $1`,
+//		id,
+//	)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	return &acceptance, nil
+//}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"message":"invalid request"}`, http.StatusBadRequest)
-		return
-	}
-
-	hasInProgress, err := storage.HasOpenAcceptance(db.DB, req.PvzID)
-	if err != nil {
-		http.Error(w, `{"message":"internal server error"}`, http.StatusInternalServerError)
-		return
-	}
-
-	if hasInProgress {
-		http.Error(w, `{"message":"previous acceptance is not closed"}`, http.StatusConflict)
-		return
-	}
-
-	acceptance := model.Acceptance{
-		ID:        uuid.New().String(),
-		CreatedAt: time.Now(),
-		PVZID:     req.PvzID,
-		Status:    "in_progress",
-	}
-
-	for _, itemReq := range req.Items {
-		acceptance.Items = append(acceptance.Items, model.Item{
-			ID:         uuid.New().String(),
-			ReceivedAt: acceptance.CreatedAt,
-			Type:       itemReq.Type,
-		})
-	}
-
-	err = storage.CreateAcceptanceWithItems(db.DB, &acceptance)
-	if err != nil {
-		http.Error(w, `{"message":"failed to create acceptance"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(acceptance); err != nil {
-		http.Error(w, `{"message":"failed to encode response"}`, http.StatusInternalServerError)
-		return
-	}
+func CloseAcceptance(db *sqlx.DB, acceptanceID string) error {
+	_, err := db.Exec(`UPDATE acceptances SET status = 'closed' WHERE id = $1`, acceptanceID)
+	return err
 }

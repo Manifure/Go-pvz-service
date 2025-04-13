@@ -1,36 +1,35 @@
-package handler
+package storage
 
 import (
-	"Go-pvz-service/internal/db"
-	"Go-pvz-service/internal/storage"
-	"encoding/json"
-	"net/http"
+	"Go-pvz-service/internal/model"
+	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
+	"time"
 )
 
-func CreatePVZHandler(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		City string `json:"city"`
+var allowedCities = map[string]bool{
+	"Москва":          true,
+	"Санкт-Петербург": true,
+	"Казань":          true,
+}
+
+func CreatePVZ(db *sqlx.DB, city string) (*model.PVZ, error) {
+	if !allowedCities[city] {
+		return nil, ErrCityNotAllowed
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, `{"message":"invalid request"}`, http.StatusBadRequest)
-		return
+	pvz := &model.PVZ{
+		ID:           uuid.New().String(),
+		City:         city,
+		RegisteredAt: time.Now(),
 	}
 
-	pvz, err := storage.CreatePVZ(db.DB, input.City)
+	_, err := db.Exec(
+		`INSERT INTO pvz (id, city, registered_at) VALUES ($1, $2, $3)`,
+		pvz.ID, pvz.City, pvz.RegisteredAt,
+	)
 	if err != nil {
-		if err == storage.ErrCityNotAllowed {
-			http.Error(w, `{"message":"city not allowed"}`, http.StatusBadRequest)
-			return
-		}
-		http.Error(w, `{"message":"failed to create pvz"}`, http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(pvz)
-	if err != nil {
-		http.Error(w, `{"message":"failed to encode response"}`, http.StatusInternalServerError)
-		return
-	}
+	return pvz, nil
 }
